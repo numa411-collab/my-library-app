@@ -15,19 +15,33 @@ import { BrowserMultiFormatReader } from "@zxing/browser";
  * 1,『消費社会の神話と構造』,ボードリヤール,9784480090474,1970,ちくま学芸文庫,"社会学;理論",研究室A-3,所蔵,付箋多数
  */
 
-// 型定義
-const emptyBook = () => ({
-  id: crypto.randomUUID(),
+// ★ 型を明示して id は string に固定
+type Book = {
+  id: string;
+  title: string;
+  author: string;
+  isbn: string;
+  year: string;
+  publisher: string;
+  tags: string[];
+  location: string;
+  status: "所蔵" | "貸出中";
+  note: string;
+};
+
+const emptyBook = (): Book => ({
+  id: crypto.randomUUID() as string, // ← string として扱う
   title: "",
   author: "",
   isbn: "",
   year: "",
   publisher: "",
-  tags: [] as string[],
+  tags: [],
   location: "",
-  status: "所蔵" as "所蔵" | "貸出中",
+  status: "所蔵",
   note: "",
 });
+
 
 function normalize(s: string) {
   return (s || "")
@@ -74,7 +88,7 @@ function csvEscape(value: string) {
   return v;
 }
 
-function toCSV(books: any[]) {
+function toCSV(books: Book[]) {
   const header = [
     "id",
     "title",
@@ -106,7 +120,7 @@ function toCSV(books: any[]) {
   return lines.join("\n");
 }
 
-function fromCSV(text: string) {
+function fromCSV(text: string): Book[] {
   // シンプルCSVパーサ（カンマ区切り・ダブルクォート対応）
   const rows: string[][] = [];
   let cur = "";
@@ -162,7 +176,7 @@ function fromCSV(text: string) {
 }
 
 export default function LibraryApp() {
-  const [books, setBooks] = useState<any[]>(() => load("books", []));
+  const [books, setBooks] = useState<Book[]>(() => load("books", []));
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<
     "title" | "author" | "year" | "location" | "status"
@@ -172,7 +186,7 @@ export default function LibraryApp() {
   const [statusFilter, setStatusFilter] = useState<"all" | "所蔵" | "貸出中">
     ("all")
   ;
-  const [editing, setEditing] = useState<any | null>(null);
+  const [editing, setEditing] = useState<Book | null>(null);
 
   useEffect(() => {
     save("books", books);
@@ -215,7 +229,7 @@ export default function LibraryApp() {
     return res;
   }, [books, query, tagFilter, statusFilter, sortBy, sortDir]);
 
-  function upsertBook(book: any) {
+  function upsertBook(book: Book) {
     setBooks((prev) => {
       const i = prev.findIndex((x) => x.id === book.id);
       if (i === -1) return [book, ...prev];
@@ -692,7 +706,7 @@ function ScanDialog({
     const reader = new BrowserMultiFormatReader();
     (async () => {
       try {
-        await reader.decodeFromVideoDevice(null, videoRef.current!, (result, _e, controls) => {
+        await reader.decodeFromVideoDevice(undefined, videoRef.current!, (result, _e, controls) => {
           if (result) {
             const cleaned = result.getText().replace(/[^0-9]/g, "");
             if (cleaned) {
