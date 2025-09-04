@@ -16,7 +16,7 @@ import { BrowserMultiFormatReader } from "@zxing/browser";
  */
 
 // ★ 型を明示して id は string に固定
-type Book = {
+export type Book = {
   id: string;
   title: string;
   author: string;
@@ -29,8 +29,13 @@ type Book = {
   note: string;
 };
 
+// uuid フォールバック付き
+const uuid = () =>
+  (globalThis.crypto?.randomUUID?.() ??
+    Math.random().toString(36).slice(2) + Date.now().toString(36)) as string;
+
 const emptyBook = (): Book => ({
-  id: crypto.randomUUID() as string, // ← string として扱う
+  id: uuid(),
   title: "",
   author: "",
   isbn: "",
@@ -42,13 +47,8 @@ const emptyBook = (): Book => ({
   note: "",
 });
 
-
 function normalize(s: string) {
-  return (s || "")
-    .toString()
-    .normalize("NFKC")
-    .toLowerCase()
-    .trim();
+  return (s || "").toString().normalize("NFKC").toLowerCase().trim();
 }
 
 function parseTags(input: string | string[]) {
@@ -126,11 +126,13 @@ function fromCSV(text: string): Book[] {
   let cur = "";
   let inQ = false;
   let row: string[] = [];
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
+  // CRLF 正規化（Windows 由来CSV対策）
+  const src = text.replace(/\r\n/g, "\n");
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
     if (inQ) {
       if (ch === '"') {
-        if (text[i + 1] === '"') {
+        if (src[i + 1] === '"') {
           cur += '"';
           i++;
         } else {
@@ -161,7 +163,7 @@ function fromCSV(text: string): Book[] {
     .map((r) => {
       const b = emptyBook();
       const get = (k: string) => (idx(k) >= 0 ? r[idx(k)] : "");
-      b.id = get("id") || crypto.randomUUID();
+      b.id = get("id") || uuid();
       b.title = get("title");
       b.author = get("author");
       b.isbn = get("isbn");
@@ -169,10 +171,86 @@ function fromCSV(text: string): Book[] {
       b.publisher = get("publisher");
       b.tags = parseTags(get("tags"));
       b.location = get("location");
-      b.status = (get("status") as any) || "所蔵";
+      const st = get("status");
+      b.status = st === "貸出中" ? "貸出中" : "所蔵";
       b.note = get("note");
       return b;
     });
+}
+
+// OpenBD (https://openbd.jp/) から取得
+async function fetchFromOpenBD(isbn: string) {
+  const clean = (isbn || "").replace(/\D/g, "");
+  const res = await fetch(`https://api.openbd.jp/v1/get?isbn=${clean}`);
+  if (!res.ok) throw new Error("openBD fetch failed");
+  const arr = await res.json();
+  const item = arr?.[0];
+  if (!item) return null;
+
+  const s = item.summary || {};
+  let year = "";
+  if (typeof s.pubdate === "string" && /^\d{4}/.test(s.pubdate)) {
+    year =
+      s.pubdate.length >= 6
+        ? `${s.pubdate.slice(0, 4)}/${s.pubdate.slice(4, 6)}`
+        : s.pubdate.slice(0, 4);
+  }
+
+  return {
+    title: s.title || "",
+    author: s.author || "",
+    publisher: s.publisher || "",
+    year,
+    isbn: clean,
+  };
+}
+
+// Google Books を優先し、足りない項目を OpenBD で補完
+async function fetchBookByISBN(isbn: string) {
+  const clean = (isbn || "").replace(/\D/g, "");
+  if (!clean) throw new Error("ISBNが空です");
+
+  // 1) Google Books
+  let g: any = null;
+  try {
+    const q = encodeURIComponent(`isbn:${clean}`);
+    const url = `https://www.googleapis.com/books/v1/volumes?q=${q}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("google books fetch failed");
+    const json = await res.json();
+    const item = json?.items?.[0];
+    const v = item?.volumeInfo;
+    if (v) {
+      g = {
+        title: v.title || "",
+        author: Array.isArray(v.authors) ? v.authors.join(", ") : v.authors || "",
+        publisher: v.publisher || "",
+        year: (v.publishedDate || "").replace(/-0?/, "/"), // "1997-03"→"1997/03"
+        isbn: clean,
+      };
+    }
+  } catch {
+    // 無視してフォールバックへ
+  }
+
+  // 2) OpenBD（足りない項目だけ補完）
+  let o: any = null;
+  try {
+    o = await fetchFromOpenBD(clean);
+  } catch {}
+
+  const merged = {
+    title: g?.title || o?.title || "",
+    author: g?.author || o?.author || "",
+    publisher: g?.publisher || o?.publisher || "",
+    year: g?.year || o?.year || "",
+    isbn: clean,
+  };
+
+  if (!merged.title && !merged.author && !merged.publisher && !merged.year) {
+    throw new Error("書誌情報が見つかりませんでした");
+  }
+  return merged;
 }
 
 export default function LibraryApp() {
@@ -183,9 +261,9 @@ export default function LibraryApp() {
   >("title");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [tagFilter, setTagFilter] = useState<string>("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "所蔵" | "貸出中">
-    ("all")
-  ;
+  const [statusFilter, setStatusFilter] = useState<"all" | "所蔵" | "貸出中">(
+    "all"
+  );
   const [editing, setEditing] = useState<Book | null>(null);
 
   useEffect(() => {
@@ -556,14 +634,51 @@ function EditDialog({
     setB((prev: any) => ({ ...prev, [key]: val }));
   }
 
+  const [autoBusy, setAutoBusy] = useState(false);
+
+  async function autofillFromISBN() {
+    try {
+      setAutoBusy(true);
+      const isbn = String(b.isbn || "").replace(/\D/g, "");
+      if (!isbn) {
+        alert("ISBNを入力（またはスキャン）してください");
+        return;
+      }
+      const info = await fetchBookByISBN(isbn);
+      if (!info) {
+        alert("該当データが見つかりませんでした");
+        return;
+      }
+      // 既に手入力がある項目は尊重し、空欄のみ埋める
+      setB((prev: any) => ({
+        ...prev,
+        isbn,
+        title: prev.title || info.title,
+        author: prev.author || info.author,
+        publisher: prev.publisher || info.publisher,
+        year: prev.year || info.year,
+      }));
+    } catch (e: any) {
+      alert("取得に失敗しました: " + (e?.message || String(e)));
+    } finally {
+      setAutoBusy(false);
+    }
+  }
+
   return (
-    <dialog ref={ref} className="backdrop:bg-black/40 rounded-2xl p-0 border-0 w-11/12 md:w-2/3 lg:w-1/2">
+    <dialog
+      ref={ref}
+      className="backdrop:bg-black/40 rounded-2xl p-0 border-0 w-11/12 md:w-2/3 lg:w-1/2"
+    >
       <form
         method="dialog"
         className="bg-white rounded-2xl overflow-hidden border border-slate-200"
         onSubmit={(e) => {
           e.preventDefault();
-          onSave({ ...b, tags: parseTags(Array.isArray(b.tags) ? b.tags.join(";") : b.tags) });
+          onSave({
+            ...b,
+            tags: parseTags(Array.isArray(b.tags) ? b.tags.join(";") : b.tags),
+          });
         }}
       >
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
@@ -591,6 +706,7 @@ function EditDialog({
               className="w-full rounded-xl border border-slate-300 px-3 py-2"
             />
           </Field>
+
           <Field label="ISBN">
             <div className="flex gap-2">
               <input
@@ -608,8 +724,34 @@ function EditDialog({
               >
                 📷
               </button>
+
+              {/* ▼ 自動取得（Google→OpenBDフォールバック） */}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const data = await fetchBookByISBN(b.isbn);
+                    if (data) {
+                      set("title", data.title || b.title);
+                      set("author", data.author || b.author);
+                      set("publisher", data.publisher || b.publisher);
+                      set("year", data.year || b.year);
+                      alert("書誌情報を取得しました");
+                    } else {
+                      alert("書誌情報が見つかりませんでした");
+                    }
+                  } catch (e: any) {
+                    alert("取得に失敗: " + (e?.message || e));
+                  }
+                }}
+                className="shrink-0 rounded-xl border border-slate-300 px-3 py-2 bg-white hover:bg-slate-50 text-rose-600"
+                title="ISBNから自動取得"
+              >
+                自動取得
+              </button>
             </div>
           </Field>
+
           <Field label="発行年">
             <input
               value={b.year}
@@ -706,22 +848,36 @@ function ScanDialog({
     const reader = new BrowserMultiFormatReader();
     (async () => {
       try {
-        await reader.decodeFromVideoDevice(undefined, videoRef.current!, (result, _e, controls) => {
-          if (result) {
-            const cleaned = result.getText().replace(/[^0-9]/g, "");
-            if (cleaned) {
-              controls.stop();
-              stopStream();
-              onDetected(cleaned);
+        await reader.decodeFromVideoDevice(
+          undefined,
+          videoRef.current!,
+          (result, _e, controls) => {
+            if (result) {
+              const cleaned = result.getText().replace(/[^0-9]/g, "");
+              if (cleaned) {
+                controls.stop();
+                stopStream();
+                onDetected(cleaned);
+              }
             }
           }
-        });
+        );
       } catch (e: any) {
         setErr("カメラ起動に失敗: " + (e?.message || String(e)));
       }
     })();
-    return () => { stopStream(); };
-  }, []);
+    return () => {
+      stopStream();
+    };
+
+    function stopStream() {
+      const v = videoRef.current;
+      if (v?.srcObject) {
+        (v.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+        v.srcObject = null;
+      }
+    }
+  }, [onDetected]);
 
   function stopStream() {
     const v = videoRef.current;
@@ -732,14 +888,31 @@ function ScanDialog({
   }
 
   return (
-    <dialog ref={ref} className="backdrop:bg-black/40 rounded-2xl p-0 border-0 w-11/12 md:w-2/3">
+    <dialog
+      ref={ref}
+      className="backdrop:bg-black/40 rounded-2xl p-0 border-0 w-11/12 md:w-2/3"
+    >
       <div className="bg-white rounded-2xl overflow-hidden border border-slate-200">
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
           <h3 className="font-semibold">ISBNをスキャン</h3>
-          <button onClick={() => { stopStream(); onClose(); }} className="text-slate-600 hover:bg-slate-100 px-3 py-1 rounded-lg">閉じる</button>
+          <button
+            onClick={() => {
+              stopStream();
+              onClose();
+            }}
+            className="text-slate-600 hover:bg-slate-100 px-3 py-1 rounded-lg"
+          >
+            閉じる
+          </button>
         </div>
         <div className="p-4">
-          <video ref={videoRef} className="w-full rounded-xl bg-black aspect-video" autoPlay muted playsInline />
+          <video
+            ref={videoRef}
+            className="w-full rounded-xl bg-black aspect-video"
+            autoPlay
+            muted
+            playsInline
+          />
           {err && <p className="text-sm text-rose-600 mt-2">{err}</p>}
         </div>
       </div>
@@ -755,3 +928,4 @@ function Field({ label, children, span = false }: any) {
     </label>
   );
 }
+
