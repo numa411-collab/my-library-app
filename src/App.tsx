@@ -725,30 +725,20 @@ function EditDialog({
                 📷
               </button>
 
-              {/* ▼ 自動取得（Google→OpenBDフォールバック） */}
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    const data = await fetchBookByISBN(b.isbn);
-                    if (data) {
-                      set("title", data.title || b.title);
-                      set("author", data.author || b.author);
-                      set("publisher", data.publisher || b.publisher);
-                      set("year", data.year || b.year);
-                      alert("書誌情報を取得しました");
-                    } else {
-                      alert("書誌情報が見つかりませんでした");
-                    }
-                  } catch (e: any) {
-                    alert("取得に失敗: " + (e?.message || e));
-                  }
-                }}
-                className="shrink-0 rounded-xl border border-slate-300 px-3 py-2 bg-white hover:bg-slate-50 text-rose-600"
-                title="ISBNから自動取得"
-              >
-                自動取得
-              </button>
+           
+{/* ▼ 自動取得（Google→OpenBDフォールバック） */}
+<button
+  type="button"
+  onClick={() => { void autofillFromISBN(); }}
+  disabled={autoBusy}
+  className={`shrink-0 rounded-xl border border-slate-300 px-3 py-2 bg-white hover:bg-slate-50 text-rose-600 ${
+    autoBusy ? "opacity-60 cursor-not-allowed" : ""
+  }`}
+  title="ISBNから自動取得"
+>
+  {autoBusy ? "取得中…" : "自動取得"}
+</button>
+
             </div>
           </Field>
 
