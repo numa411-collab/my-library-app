@@ -466,55 +466,7 @@ export default function LibraryApp() {
     setBooks((prev) => prev.filter((b) => b.id !== id));
   }
 
-  // サンプル追加
-  function handleSample() {
-    const sample: Book[] = [
-      {
-        ...emptyBook(),
-        title: "消費社会の神話と構造",
-        author: "ジャン・ボードリヤール",
-        isbn: "9784480090474",
-        year: "1970/2008",
-        publisher: "ちくま学芸文庫",
-        tags: ["社会学", "理論"],
-        location: "研究室A-3",
-        status: "所蔵",
-        note: "付箋多数",
-        extras: {
-          magazine_code: "",
-          timestamp: new Date().toISOString(),
-          cover: "https://cover.openbd.jp/9784480090474.jpg",
-        },
-      },
-      {
-        ...emptyBook(),
-        title: "音楽・メディア論集",
-        author: "T.W. アドルノ",
-        isbn: "",
-        year: "1998",
-        publisher: "平凡社",
-        tags: ["メディア論", "音楽"],
-        location: "自宅書斎B-2",
-        status: "所蔵",
-        note: "講義用資料",
-        extras: { magazine_code: "", timestamp: new Date().toISOString(), cover: "" },
-      },
-      {
-        ...emptyBook(),
-        title: "現代思想 2023年9月号 特集＝生活史／エスノグラフィー",
-        author: "編集部",
-        isbn: "4910032930934",
-        year: "2023/09",
-        publisher: "青土社",
-        tags: ["生活史", "エスノグラフィー"],
-        location: "PDF/クラウド",
-        status: "貸出中",
-        note: "学生貸出中（佐藤さん）",
-        extras: { magazine_code: "4910032930934", timestamp: new Date().toISOString(), cover: "" },
-      },
-    ];
-    setBooks(prev => [...sample, ...prev]);
-  }
+
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -550,7 +502,7 @@ export default function LibraryApp() {
               />
             </label>
             <button onClick={handleExport} className="rounded-xl border border-slate-300 px-4 py-2 bg-white hover:bg-slate-50">CSV書出</button>
-            <button onClick={handleSample} className="rounded-xl border border-slate-300 px-4 py-2 bg-white hover:bg-slate-50">サンプル追加</button>
+            
 
             {/* 複数選択操作 */}
             <button
