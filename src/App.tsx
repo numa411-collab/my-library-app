@@ -3,18 +3,17 @@ import { BrowserMultiFormatReader } from "@zxing/browser";
 
 /* ======================== 型定義 ======================== */
 export type Book = {
-  id: string;
+  id: string; // 自動UUID or CSV/手動指定
   title: string;
   author: string;
   isbn: string;
   year: string;
   publisher: string;
-  tags: string[]; // 「タグ」列（;区切り）を配列で保持
+  tags: string[];
   location: string;
   status: "所蔵" | "貸出中";
   note: string;
-  // 追加列は extras に格納（雑誌コード/タイムスタンプ/表紙URL）
-  extras?: Record<string, string>;
+  extras?: Record<string, string>; // 雑誌コード/タイムスタンプ/表紙URL など
 };
 
 /* ======================== ユーティリティ ======================== */
@@ -42,7 +41,7 @@ function normalizeIsbn(raw: string) {
     const core12 = "978" + d.slice(0, 9);
     return core12 + ean13CheckDigit(core12);
   }
-  return d; // それ以外は生値（空もOK）
+  return d; // それ以外は生値で（空もOK）
 }
 function ean13CheckDigit(core12: string) {
   let sum = 0;
@@ -90,9 +89,10 @@ function csvEscape(value: string) {
   return v;
 }
 
-/* ======================== CSVヘッダ ======================== */
-// 新：タグあり（書き出しは常にこちら）
+/* ======================== CSVヘッダ（固定順） ======================== */
+/** 新：ID + タグ（書き出しは常にこれ） */
 const JP_HEADERS = [
+  "ID",
   "ISBNコード",
   "雑誌コード",
   "タイトル",
@@ -107,8 +107,9 @@ const JP_HEADERS = [
   "タグ",
 ] as const;
 
-// 旧：タグなし（読み込み時のみ許容）
-const JP_HEADERS_LEGACY = [
+/** 旧互換：タグなし（IDあり） */
+const JP_HEADERS_NO_TAG = [
+  "ID",
   "ISBNコード",
   "雑誌コード",
   "タイトル",
@@ -122,7 +123,38 @@ const JP_HEADERS_LEGACY = [
   "メモ",
 ] as const;
 
-type JpHeader = (typeof JP_HEADERS)[number];
+/** 旧互換：IDなし（タグあり） */
+const JP_HEADERS_NO_ID = [
+  "ISBNコード",
+  "雑誌コード",
+  "タイトル",
+  "著者",
+  "出版社",
+  "年",
+  "タイムスタンプ",
+  "表紙",
+  "場所",
+  "状態",
+  "メモ",
+  "タグ",
+] as const;
+
+/** 旧互換：IDなし・タグなし */
+const JP_HEADERS_NO_ID_NO_TAG = [
+  "ISBNコード",
+  "雑誌コード",
+  "タイトル",
+  "著者",
+  "出版社",
+  "年",
+  "タイムスタンプ",
+  "表紙",
+  "場所",
+  "状態",
+  "メモ",
+] as const;
+
+type JpHeader = (typeof JP_HEADERS)[number] | "ID";
 
 /* ======================== CSV 低レベルパーサ ======================== */
 function parseCSV(text: string): string[][] {
@@ -148,43 +180,40 @@ function parseCSV(text: string): string[][] {
   return rows;
 }
 
-/* ======================== ヘッダ検出（新旧対応） ======================== */
+/* ======================== ヘッダ検出（新旧両対応） ======================== */
 function normalizeHeaderCell(s: string) {
-  return String(s || "")
-    .replace(/\s+/g, "") // 空白除去（全角/半角問わず）
-    .normalize("NFKC");
+  return String(s || "").replace(/\s+/g, "").normalize("NFKC");
 }
 function detectHeaderMap(headerRow: string[]) {
   const norm = headerRow.map(normalizeHeaderCell);
-  const NEW_NORM = JP_HEADERS.map(normalizeHeaderCell);
-  const OLD_NORM = JP_HEADERS_LEGACY.map(normalizeHeaderCell);
 
-  const isNew = norm.length >= NEW_NORM.length && NEW_NORM.every((h, i) => norm[i] === h);
-  const isOld =
-    !isNew &&
-    norm.length >= OLD_NORM.length &&
-    OLD_NORM.every((h, i) => norm[i] === h);
+  const variants = [
+    { kind: "new", arr: JP_HEADERS },
+    { kind: "no_tag", arr: JP_HEADERS_NO_TAG },
+    { kind: "no_id", arr: JP_HEADERS_NO_ID },
+    { kind: "no_id_no_tag", arr: JP_HEADERS_NO_ID_NO_TAG },
+  ] as const;
 
-  if (isNew) {
-    const map: Record<string, number> = {};
-    JP_HEADERS.forEach((h, i) => (map[h] = i));
-    return { kind: "new" as const, map };
-  }
-  if (isOld) {
-    const map: Record<string, number> = {};
-    JP_HEADERS_LEGACY.forEach((h, i) => (map[h] = i));
-    (map as any)["タグ"] = -1; // 旧ヘッダには無い
-    return { kind: "old" as const, map };
+  for (const v of variants) {
+    const base = (v.arr as readonly string[]).map(normalizeHeaderCell);
+    const ok = norm.length >= base.length && base.every((h, i) => norm[i] === h);
+    if (ok) {
+      const map: Record<string, number> = {};
+      (v.arr as readonly string[]).forEach((h, i) => (map[h] = i));
+      // 無い列は -1 にしておく
+      if (!("ID" in map)) (map as any)["ID"] = -1;
+      if (!("タグ" in map)) (map as any)["タグ"] = -1;
+      return { kind: v.kind, map };
+    }
   }
 
   throw new Error(
     "CSVヘッダが想定順序と一致しません。\n" +
-      "許容される先頭行：\n" +
-      "・新（タグあり）: " +
-      JP_HEADERS.join(", ") +
-      "\n" +
-      "・旧（タグなし）: " +
-      JP_HEADERS_LEGACY.join(", ")
+      "許容される先頭行（いずれか）:\n" +
+      "・" + JP_HEADERS.join(", ") + "\n" +
+      "・" + JP_HEADERS_NO_TAG.join(", ") + "\n" +
+      "・" + JP_HEADERS_NO_ID.join(", ") + "\n" +
+      "・" + JP_HEADERS_NO_ID_NO_TAG.join(", ")
   );
 }
 
@@ -204,18 +233,21 @@ function fromCSV_JP(text: string): Book[] {
   for (const r of rows) {
     if (!r || r.every((c) => String(c ?? "").trim() === "")) continue;
 
+    const csvId = getCell(r, "ID");
     const isbnRaw = normalizeIsbn(getCell(r, "ISBNコード"));
     const title = getCell(r, "タイトル");
-    if (!isbnRaw && !title) continue;
+    // ISBNもタイトルもIDも無ければスキップ
+    if (!isbnRaw && !title && !csvId) continue;
 
     const b: Book = {
       ...emptyBook(),
+      id: csvId || uuid(), // CSVにIDがあれば採用、無ければ自動
       title,
       author: getCell(r, "著者"),
       isbn: isbnRaw,
       year: getCell(r, "年"),
       publisher: getCell(r, "出版社"),
-      tags: parseTags(getCell(r, "タグ")),        // 旧CSVなら空配列
+      tags: parseTags(getCell(r, "タグ")), // 無ければ空配列
       location: getCell(r, "場所"),
       status: getCell(r, "状態") === "貸出中" ? "貸出中" : "所蔵",
       note: getCell(r, "メモ"),
@@ -225,27 +257,27 @@ function fromCSV_JP(text: string): Book[] {
     const magazine_code = getCell(r, "雑誌コード");
     const timestamp = getCell(r, "タイムスタンプ");
     const cover = getCell(r, "表紙");
-    if (magazine_code) (b.extras as any).magazine_code = magazine_code;
-    if (timestamp) (b.extras as any).timestamp = timestamp;
-    if (cover) (b.extras as any).cover = cover;
+    if (magazine_code) b.extras!.magazine_code = magazine_code;
+    if (timestamp)     b.extras!.timestamp     = timestamp;
+    if (cover)         b.extras!.cover         = cover;
 
     list.push(b);
   }
   return list;
 }
 
-
 function toCSV_JP(books: Book[]) {
   const head = JP_HEADERS.join(",");
   const lines = [head];
   for (const b of books) {
     const row = [
+      csvEscape(b.id), // 先頭ID
       csvEscape(b.isbn ?? ""),
       csvEscape(String(b.extras?.magazine_code ?? "")),
       csvEscape(b.title ?? ""),
       csvEscape(b.author ?? ""),
       csvEscape(b.publisher ?? ""),
-      csvEscape(b.year ?? ""),                          // ← ここの余計な ')' を削除済み
+      csvEscape(b.year ?? ""),
       csvEscape(String(b.extras?.timestamp ?? "")),
       csvEscape(String(b.extras?.cover ?? "")),
       csvEscape(b.location ?? ""),
@@ -257,7 +289,6 @@ function toCSV_JP(books: Book[]) {
   }
   return lines.join("\n");
 }
-
 
 /* ======================== 列表示設定 ======================== */
 type ColumnKey =
@@ -276,7 +307,7 @@ const APP_DEFAULT_COLUMNS: ColumnConfig[] = [
   { key: "year",      label: "発行年",         visible: true },
   { key: "location",  label: "場所",           visible: true },
   { key: "status",    label: "状態",           visible: true },
-  { key: "tags",      label: "タグ",           visible: true }, // タグ列を表示
+  { key: "tags",      label: "タグ",           visible: true },
   { key: "note",      label: "メモ",           visible: true },
   { key: "extra:cover",         label: "表紙",           visible: false },
   { key: "extra:magazine_code", label: "雑誌コード",     visible: false },
@@ -293,7 +324,7 @@ function saveColumns(cols: ColumnConfig[]) {
 
 /* ======================== UI本体 ======================== */
 export default function LibraryApp() {
-  // タブタイトルを統一
+  // タブタイトル
   useEffect(() => {
     document.title = "沼田真一研究室 蔵書検索アプリ";
   }, []);
@@ -306,12 +337,13 @@ export default function LibraryApp() {
   const [statusFilter, setStatusFilter] = useState<"all" | "所蔵" | "貸出中">("all");
   const [editing, setEditing] = useState<Book | null>(null);
 
+  // 表示カラム
   const [columns, setColumns] = useState<ColumnConfig[]>(
     () => loadColumns() ?? APP_DEFAULT_COLUMNS
   );
   const show = (k: ColumnKey) => columns.find((c) => c.key === k)?.visible ?? true;
 
-  // 複数選択（削除用）
+  // 複数選択（削除）
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const isSelected = (id: string) => selectedIds.has(id);
   const selectedCount = selectedIds.size;
@@ -389,7 +421,7 @@ export default function LibraryApp() {
     download(`NumataLab_Books_${today}.csv`, toCSV_JP(books));
   }
 
-  // CSV 読み込み（新旧ヘッダ対応）
+  // CSV 読み込み（ID優先→ISBN、ID置換可・衝突検知付き）
   function handleImport(file: File) {
     const reader = new FileReader();
     reader.onload = () => {
@@ -399,49 +431,66 @@ export default function LibraryApp() {
         if (!incoming.length) return alert("CSVに行がありません");
 
         setBooks((prev) => {
-          const byIsbn = new Map<string, Book>();
-          const byId = new Map<string, Book>();
-          for (const b of prev) {
-            if (b.isbn) byIsbn.set(normalizeIsbn(b.isbn), b);
-            byId.set(b.id, b);
-          }
-          let added = 0, updated = 0;
+          const byId   = new Map(prev.map(b => [b.id, b] as const));
+          const byIsbn = new Map(prev.filter(b => b.isbn).map(b => [normalizeIsbn(b.isbn), b] as const));
+          let added = 0, updated = 0, idConflicts = 0;
 
           for (const inc of incoming) {
             const keyIsbn = normalizeIsbn(inc.isbn);
-            const target = keyIsbn ? byIsbn.get(keyIsbn) : null;
+            const csvId   = (inc.id || "").trim();
+
+            // 1) ID一致が最優先
+            let target = (csvId && byId.get(csvId)) || null;
+
+            // 2) 見つからなければ ISBN で突き合わせ
+            if (!target && keyIsbn) target = byIsbn.get(keyIsbn) || null;
 
             if (!target) {
-              const newRec: Book = {
-                ...emptyBook(),
-                ...inc,
-                id: inc.id || uuid(),
-                isbn: keyIsbn || inc.isbn,
-                status: inc.status === "貸出中" ? "貸出中" : "所蔵",
-              };
-              if (newRec.isbn) byIsbn.set(newRec.isbn, newRec);
+              // 新規（IDはCSVのもの or 自動UUID）
+              const newRec: Book = { ...emptyBook(), ...inc, id: csvId || uuid(), isbn: keyIsbn || inc.isbn };
               byId.set(newRec.id, newRec);
+              if (newRec.isbn) byIsbn.set(normalizeIsbn(newRec.isbn), newRec);
               added++;
-            } else {
-              const merged: Book = {
-                ...target,
-                title: inc.title,
-                author: inc.author,
-                isbn: keyIsbn || inc.isbn,
-                year: inc.year,
-                publisher: inc.publisher,
-                tags: inc.tags || [],
-                location: inc.location,
-                status: inc.status,
-                note: inc.note,
-                extras: { ...(target.extras || {}), ...(inc.extras || {}) },
-              };
-              byId.set(merged.id, merged);
-              if (merged.isbn) byIsbn.set(merged.isbn, merged);
-              updated++;
+              continue;
             }
+
+            // 既存あり：CSVの値で上書き
+            let nextId = target.id;
+
+            // ISBN一致でマッチした場合、CSVに別IDが書いてあれば“IDを置換”（ただし衝突チェック）
+            if (!csvId || csvId === target.id) {
+              // そのまま
+            } else {
+              if (byId.has(csvId)) {
+                idConflicts++;
+              } else {
+                byId.delete(target.id);
+                nextId = csvId;
+              }
+            }
+
+            const merged: Book = {
+              ...target,
+              id: nextId,
+              title: inc.title,
+              author: inc.author,
+              isbn: keyIsbn || inc.isbn,
+              year: inc.year,
+              publisher: inc.publisher,
+              tags: inc.tags || [],
+              location: inc.location,
+              status: inc.status,
+              note: inc.note,
+              extras: { ...(target.extras || {}), ...(inc.extras || {}) },
+            };
+
+            byId.set(merged.id, merged);
+            if (merged.isbn) byIsbn.set(normalizeIsbn(merged.isbn), merged);
+            updated++;
           }
-          alert(`取り込み：新規 ${added} / 上書き ${updated}`);
+
+          const msg = `取り込み：新規 ${added} / 上書き ${updated}` + (idConflicts ? ` / ID衝突 ${idConflicts}` : "");
+          alert(msg);
           return Array.from(byId.values());
         });
       } catch (e: any) {
@@ -451,22 +500,39 @@ export default function LibraryApp() {
     reader.readAsText(file, "utf-8");
   }
 
-  // 1冊更新/追加・1冊削除
-  function upsertBook(book: Book) {
-    setBooks((prev) => {
-      const i = prev.findIndex((x) => x.id === book.id);
-      if (i === -1) return [book, ...prev];
-      const copy = [...prev];
-      copy[i] = book;
-      return copy;
+  // 1冊 upsert（ID変更対応・衝突チェック）
+  function upsertBook(book: Book, prevId?: string) {
+    setBooks(prev => {
+      // ID衝突チェック：別本が同じIDを使っていないか
+      const dup = prev.find(x => x.id === book.id && x.id !== prevId);
+      if (dup) {
+        alert(`ID「${book.id}」は既に別の本で使われています。別のIDを指定してください。`);
+        return prev;
+      }
+
+      const byId = new Map(prev.map(b => [b.id, b] as const));
+
+      if (prevId && prevId !== book.id) {
+        // IDが変更された → 旧IDを消して新IDで追加
+        byId.delete(prevId);
+        byId.set(book.id, book);
+        return Array.from(byId.values());
+      }
+
+      // 通常の upsert
+      if (byId.has(book.id)) {
+        byId.set(book.id, book);
+        return Array.from(byId.values());
+      } else {
+        return [book, ...prev];
+      }
     });
   }
+
   function removeBook(id: string) {
     if (!confirm("削除してよいですか？")) return;
     setBooks((prev) => prev.filter((b) => b.id !== id));
   }
-
-
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -502,7 +568,6 @@ export default function LibraryApp() {
               />
             </label>
             <button onClick={handleExport} className="rounded-xl border border-slate-300 px-4 py-2 bg-white hover:bg-slate-50">CSV書出</button>
-            
 
             {/* 複数選択操作 */}
             <button
@@ -660,7 +725,7 @@ export default function LibraryApp() {
                       </div>
                     )}
 
-                    {/* 追加情報（テキスト） */}
+                    {/* 追加情報 */}
                     {show("extra:magazine_code") && b.extras?.magazine_code && (
                       <div className="text-sm text-slate-700 mt-1">雑誌コード：{b.extras.magazine_code}</div>
                     )}
@@ -734,13 +799,13 @@ export default function LibraryApp() {
         <details className="mt-2">
           <summary className="cursor-pointer">CSVの列仕様（クリックで開く）</summary>
           <pre className="mt-2 bg-slate-100 rounded-xl p-3 overflow-auto">{`
-ヘッダ（固定・順序厳守）:
+ヘッダ（固定・順序厳守。書き出しは常にこの形式）:
 ${JP_HEADERS.join(", ")}
 
 - 「タグ」は「;」区切り（例: 社会学;理論;講義用）
 - 「状態」は「所蔵」または「貸出中」
 - 「表紙」はURL（任意）
-- 旧CSV（タグなし）も読み込み可（書き出しは常にタグあり）
+- 旧CSV（ID/タグなし等）も読み込み可（ID・タグが無ければ空として取り込み）
           `}</pre>
         </details>
       </footer>
@@ -750,22 +815,30 @@ ${JP_HEADERS.join(", ")}
         <EditDialog
           initial={editing}
           onClose={() => setEditing(null)}
-          onSave={(b) => { upsertBook(b); setEditing(null); }}
+          onSave={(next, prevId) => { upsertBook(next, prevId); setEditing(null); }}
         />
       )}
     </div>
   );
 }
 
-/* ======================== 編集ダイアログ ======================== */
-function EditDialog({ initial, onClose, onSave }: { initial: any; onClose: () => void; onSave: (b: any) => void; }) {
-  const [b, setB] = useState<any>({ ...initial });
+/* ======================== 編集ダイアログ（ID編集可） ======================== */
+function EditDialog({
+  initial,
+  onClose,
+  onSave,
+}: {
+  initial: Book;
+  onClose: () => void;
+  onSave: (b: Book, prevId: string) => void;
+}) {
+  const [b, setB] = useState<Book>({ ...initial });
   const [scanOpen, setScanOpen] = useState(false);
   const ref = useRef<HTMLDialogElement | null>(null);
   useEffect(() => { ref.current?.showModal(); }, []);
 
-  function set<K extends keyof typeof b>(key: K, val: (typeof b)[K]) {
-    setB((prev: any) => ({ ...prev, [key]: val }));
+  function set<K extends keyof Book>(key: K, val: Book[K]) {
+    setB((prev: Book) => ({ ...prev, [key]: val }));
   }
 
   return (
@@ -777,9 +850,10 @@ function EditDialog({ initial, onClose, onSave }: { initial: any; onClose: () =>
           e.preventDefault();
           onSave({
             ...b,
+            id: String(b.id || uuid()).trim(),
             isbn: normalizeIsbn(b.isbn || ""),
-            tags: parseTags(Array.isArray(b.tags) ? b.tags.join(";") : b.tags),
-          });
+            tags: parseTags(b.tags as any),
+          }, initial.id);
         }}
       >
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
@@ -788,6 +862,15 @@ function EditDialog({ initial, onClose, onSave }: { initial: any; onClose: () =>
         </div>
 
         <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[70vh] overflow-auto">
+          <Field label="ID（任意・未指定なら自動）">
+            <input
+              value={b.id}
+              onChange={(e) => set("id", e.target.value)}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2"
+              placeholder="A-001 など任意の管理番号／空なら自動"
+            />
+          </Field>
+
           <Field label="タイトル">
             <input value={b.title} onChange={(e) => set("title", e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" required />
           </Field>
@@ -809,13 +892,18 @@ function EditDialog({ initial, onClose, onSave }: { initial: any; onClose: () =>
             <input value={b.publisher} onChange={(e) => set("publisher", e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
           </Field>
           <Field label="タグ（; 区切り）">
-            <input value={Array.isArray(b.tags) ? b.tags.join(";") : b.tags} onChange={(e) => set("tags", e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="社会学;理論;講義用" />
+            <input
+              value={Array.isArray(b.tags) ? b.tags.join(";") : b.tags}
+              onChange={(e) => set("tags", parseTags(e.target.value))}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2"
+              placeholder="社会学;理論;講義用"
+            />
           </Field>
           <Field label="場所">
             <input value={b.location} onChange={(e) => set("location", e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="研究室A-3 / 自宅B-2 など" />
           </Field>
           <Field label="状態">
-            <select value={b.status} onChange={(e) => set("status", e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2 bg-white">
+            <select value={b.status} onChange={(e) => set("status", e.target.value as any)} className="w-full rounded-xl border border-slate-300 px-3 py-2 bg-white">
               <option value="所蔵">所蔵</option>
               <option value="貸出中">貸出中</option>
             </select>
@@ -870,7 +958,7 @@ function EditDialog({ initial, onClose, onSave }: { initial: any; onClose: () =>
           onClose={() => setScanOpen(false)}
           onDetected={(code) => {
             const cleaned = (code || "").replace(/[^0-9]/g, "");
-            if (cleaned) setB((prev: any) => ({ ...prev, isbn: cleaned }));
+            if (cleaned) setB((prev: Book) => ({ ...prev, isbn: cleaned }));
             setScanOpen(false);
           }}
         />
