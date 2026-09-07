@@ -90,6 +90,83 @@ function csvEscape(value: string) {
   return v;
 }
 
+/* ======================== ISBN書誌情報の自動取得 ======================== */
+// Google Books を優先し、足りない項目を openBD で補完する
+async function fetchFromOpenBD(isbn: string) {
+  const clean = (isbn || "").replace(/\D/g, "");
+  if (!clean) return null;
+
+  const res = await fetch(`https://api.openbd.jp/v1/get?isbn=${clean}`);
+  if (!res.ok) throw new Error("openBD fetch failed");
+
+  const arr = await res.json();
+  const item = arr?.[0];
+  if (!item) return null;
+
+  const summary = item.summary || {};
+  let year = "";
+  if (typeof summary.pubdate === "string" && /^\d{4}/.test(summary.pubdate)) {
+    year =
+      summary.pubdate.length >= 6
+        ? `${summary.pubdate.slice(0, 4)}/${summary.pubdate.slice(4, 6)}`
+        : summary.pubdate.slice(0, 4);
+  }
+
+  return {
+    title: summary.title || "",
+    author: summary.author || "",
+    publisher: summary.publisher || "",
+    year,
+    isbn: clean,
+  };
+}
+
+async function fetchBookByISBN(isbn: string) {
+  const clean = (isbn || "").replace(/\D/g, "");
+  if (!clean) throw new Error("ISBNが空です");
+
+  let google: any = null;
+  try {
+    const q = encodeURIComponent(`isbn:${clean}`);
+    const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${q}`);
+    if (res.ok) {
+      const json = await res.json();
+      const v = json?.items?.[0]?.volumeInfo;
+      if (v) {
+        google = {
+          title: v.title || "",
+          author: Array.isArray(v.authors) ? v.authors.join(", ") : v.authors || "",
+          publisher: v.publisher || "",
+          year: String(v.publishedDate || "").replace(/-0?/, "/"),
+          isbn: clean,
+        };
+      }
+    }
+  } catch {
+    // Google Booksで取れなくてもopenBDを試す
+  }
+
+  let openbd: any = null;
+  try {
+    openbd = await fetchFromOpenBD(clean);
+  } catch {
+    // openBDも取れない場合は下で判定
+  }
+
+  const merged = {
+    title: google?.title || openbd?.title || "",
+    author: google?.author || openbd?.author || "",
+    publisher: google?.publisher || openbd?.publisher || "",
+    year: google?.year || openbd?.year || "",
+    isbn: clean,
+  };
+
+  if (!merged.title && !merged.author && !merged.publisher && !merged.year) {
+    throw new Error("書誌情報が見つかりませんでした");
+  }
+  return merged;
+}
+
 /* ======================== CSVヘッダ ======================== */
 /**
  * CSV読み込みは「列名」で判定するため、列の順番は自由。
@@ -768,11 +845,39 @@ ${JP_HEADERS.join(", ")}
 function EditDialog({ initial, onClose, onSave }: { initial: any; onClose: () => void; onSave: (b: any) => void; }) {
   const [b, setB] = useState<any>({ ...initial });
   const [scanOpen, setScanOpen] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(false);
   const ref = useRef<HTMLDialogElement | null>(null);
   useEffect(() => { ref.current?.showModal(); }, []);
 
   function set<K extends keyof typeof b>(key: K, val: (typeof b)[K]) {
     setB((prev: any) => ({ ...prev, [key]: val }));
+  }
+
+  async function autofillFromISBN() {
+    try {
+      setAutoBusy(true);
+      const isbn = String(b.isbn || "").replace(/\D/g, "");
+      if (!isbn) {
+        alert("ISBNを入力するか、カメラでスキャンしてください");
+        return;
+      }
+
+      const info = await fetchBookByISBN(isbn);
+
+      // 既に入力済みの項目は上書きせず、空欄だけ自動入力
+      setB((prev: any) => ({
+        ...prev,
+        isbn,
+        title: prev.title || info.title,
+        author: prev.author || info.author,
+        publisher: prev.publisher || info.publisher,
+        year: prev.year || info.year,
+      }));
+    } catch (e: any) {
+      alert("書誌情報を取得できませんでした: " + (e?.message || String(e)));
+    } finally {
+      setAutoBusy(false);
+    }
   }
 
   return (
@@ -806,6 +911,15 @@ function EditDialog({ initial, onClose, onSave }: { initial: any; onClose: () =>
             <div className="flex gap-2">
               <input value={b.isbn} onChange={(e) => set("isbn", e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="978…" inputMode="numeric" />
               <button type="button" onClick={() => setScanOpen(true)} className="shrink-0 rounded-xl border border-slate-300 px-3 py-2 bg-white hover:bg-slate-50" title="カメラでスキャン">📷</button>
+              <button
+                type="button"
+                onClick={() => { void autofillFromISBN(); }}
+                disabled={autoBusy}
+                className={`shrink-0 rounded-xl border border-slate-300 px-3 py-2 bg-white hover:bg-slate-50 text-rose-600 ${autoBusy ? "opacity-60 cursor-not-allowed" : ""}`}
+                title="ISBNからタイトル・著者・出版社・発行年を自動取得"
+              >
+                {autoBusy ? "取得中…" : "自動取得"}
+              </button>
             </div>
           </Field>
 
