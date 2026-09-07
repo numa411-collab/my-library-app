@@ -91,8 +91,13 @@ function csvEscape(value: string) {
 }
 
 /* ======================== CSVヘッダ ======================== */
-// 新：タグあり（書き出しは常にこちら）
+/**
+ * CSV読み込みは「列名」で判定するため、列の順番は自由。
+ * ID列・タグ列などは無くても読み込み可能。
+ * 不明な列は無視する。
+ */
 const JP_HEADERS = [
+  "ID",
   "ISBNコード",
   "雑誌コード",
   "タイトル",
@@ -107,28 +112,32 @@ const JP_HEADERS = [
   "タグ",
 ] as const;
 
-// 旧：タグなし（読み込み時のみ許容）
-const JP_HEADERS_LEGACY = [
-  "ISBNコード",
-  "雑誌コード",
-  "タイトル",
-  "著者",
-  "出版社",
-  "年",
-  "タイムスタンプ",
-  "表紙",
-  "場所",
-  "状態",
-  "メモ",
-] as const;
-
 type JpHeader = (typeof JP_HEADERS)[number];
+
+const HEADER_ALIASES: Record<JpHeader, string[]> = {
+  "ID": ["ID", "id", "管理ID", "管理番号"],
+  "ISBNコード": ["ISBNコード", "ISBN", "ISBN13", "ISBN-13"],
+  "雑誌コード": ["雑誌コード", "雑誌JAN", "雑誌JANコード"],
+  "タイトル": ["タイトル", "書名", "本のタイトル"],
+  "著者": ["著者", "著者名", "作者"],
+  "出版社": ["出版社", "出版社名"],
+  "年": ["年", "発行年", "出版年", "刊行年"],
+  "タイムスタンプ": ["タイムスタンプ", "登録日時", "日時"],
+  "表紙": ["表紙", "表紙URL", "カバー", "カバーURL"],
+  "場所": ["場所", "保管場所", "所蔵場所"],
+  "状態": ["状態", "ステータス"],
+  "メモ": ["メモ", "備考", "注記"],
+  "タグ": ["タグ", "キーワード"],
+};
 
 /* ======================== CSV 低レベルパーサ ======================== */
 function parseCSV(text: string): string[][] {
   const rows: string[][] = [];
   let cur = "", inQ = false, row: string[] = [];
-  const src = String(text ?? "").replace(/\r\n/g, "\n");
+  const src = String(text ?? "")
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
 
   for (let i = 0; i < src.length; i++) {
     const ch = src[i];
@@ -148,55 +157,48 @@ function parseCSV(text: string): string[][] {
   return rows;
 }
 
-/* ======================== ヘッダ検出（新旧対応） ======================== */
+/* ======================== ヘッダ検出（順不同・別名対応） ======================== */
 function normalizeHeaderCell(s: string) {
   return String(s || "")
-    .replace(/\s+/g, "") // 空白除去（全角/半角問わず）
-    .normalize("NFKC");
+    .replace(/^\uFEFF/, "")
+    .replace(/[\s　_＿]+/g, "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .trim();
 }
+
 function detectHeaderMap(headerRow: string[]) {
-  const norm = headerRow.map(normalizeHeaderCell);
-  const NEW_NORM = JP_HEADERS.map(normalizeHeaderCell);
-  const OLD_NORM = JP_HEADERS_LEGACY.map(normalizeHeaderCell);
+  const normalized = headerRow.map(normalizeHeaderCell);
+  const map: Partial<Record<JpHeader, number>> = {};
 
-  const isNew = norm.length >= NEW_NORM.length && NEW_NORM.every((h, i) => norm[i] === h);
-  const isOld =
-    !isNew &&
-    norm.length >= OLD_NORM.length &&
-    OLD_NORM.every((h, i) => norm[i] === h);
+  (JP_HEADERS as readonly JpHeader[]).forEach((key) => {
+    const aliases = HEADER_ALIASES[key].map(normalizeHeaderCell);
+    const idx = normalized.findIndex((h) => aliases.includes(h));
+    if (idx >= 0) map[key] = idx;
+  });
 
-  if (isNew) {
-    const map: Record<string, number> = {};
-    JP_HEADERS.forEach((h, i) => (map[h] = i));
-    return { kind: "new" as const, map };
-  }
-  if (isOld) {
-    const map: Record<string, number> = {};
-    JP_HEADERS_LEGACY.forEach((h, i) => (map[h] = i));
-    (map as any)["タグ"] = -1; // 旧ヘッダには無い
-    return { kind: "old" as const, map };
+  // 最低限、ISBN・タイトル・IDのどれか1つがあれば読み込み対象とする
+  if (map["ISBNコード"] == null && map["タイトル"] == null && map["ID"] == null) {
+    throw new Error(
+      "CSVの列名を認識できません。\n" +
+      "少なくとも「ISBNコード（またはISBN）」「タイトル（または書名）」「ID」のいずれかの列が必要です。\n" +
+      "列の順番は自由です。"
+    );
   }
 
-  throw new Error(
-    "CSVヘッダが想定順序と一致しません。\n" +
-      "許容される先頭行：\n" +
-      "・新（タグあり）: " +
-      JP_HEADERS.join(", ") +
-      "\n" +
-      "・旧（タグなし）: " +
-      JP_HEADERS_LEGACY.join(", ")
-  );
+  return map;
 }
 
 /* ======================== CSV 読み込み/書き出し ======================== */
 function fromCSV_JP(text: string): Book[] {
   const rows = parseCSV(text);
   if (!rows.length) return [];
+
   const header = rows.shift() || [];
-  const prof = detectHeaderMap(header);
+  const map = detectHeaderMap(header);
 
   const getCell = (r: string[], key: JpHeader) => {
-    const idx = (prof.map as any)[key];
+    const idx = map[key];
     return idx != null && idx >= 0 ? String(r[idx] ?? "").trim() : "";
   };
 
@@ -204,18 +206,22 @@ function fromCSV_JP(text: string): Book[] {
   for (const r of rows) {
     if (!r || r.every((c) => String(c ?? "").trim() === "")) continue;
 
+    const csvId = getCell(r, "ID");
     const isbnRaw = normalizeIsbn(getCell(r, "ISBNコード"));
     const title = getCell(r, "タイトル");
-    if (!isbnRaw && !title) continue;
+
+    // ID・ISBN・タイトルがすべて空の行だけ除外
+    if (!csvId && !isbnRaw && !title) continue;
 
     const b: Book = {
       ...emptyBook(),
+      id: csvId || uuid(),
       title,
       author: getCell(r, "著者"),
       isbn: isbnRaw,
       year: getCell(r, "年"),
       publisher: getCell(r, "出版社"),
-      tags: parseTags(getCell(r, "タグ")),        // 旧CSVなら空配列
+      tags: parseTags(getCell(r, "タグ")),
       location: getCell(r, "場所"),
       status: getCell(r, "状態") === "貸出中" ? "貸出中" : "所蔵",
       note: getCell(r, "メモ"),
@@ -225,27 +231,28 @@ function fromCSV_JP(text: string): Book[] {
     const magazine_code = getCell(r, "雑誌コード");
     const timestamp = getCell(r, "タイムスタンプ");
     const cover = getCell(r, "表紙");
-    if (magazine_code) (b.extras as any).magazine_code = magazine_code;
-    if (timestamp) (b.extras as any).timestamp = timestamp;
-    if (cover) (b.extras as any).cover = cover;
+    if (magazine_code) b.extras!.magazine_code = magazine_code;
+    if (timestamp) b.extras!.timestamp = timestamp;
+    if (cover) b.extras!.cover = cover;
 
     list.push(b);
   }
   return list;
 }
 
-
 function toCSV_JP(books: Book[]) {
   const head = JP_HEADERS.join(",");
   const lines = [head];
+
   for (const b of books) {
     const row = [
+      csvEscape(b.id ?? ""),
       csvEscape(b.isbn ?? ""),
       csvEscape(String(b.extras?.magazine_code ?? "")),
       csvEscape(b.title ?? ""),
       csvEscape(b.author ?? ""),
       csvEscape(b.publisher ?? ""),
-      csvEscape(b.year ?? ""),                          // ← ここの余計な ')' を削除済み
+      csvEscape(b.year ?? ""),
       csvEscape(String(b.extras?.timestamp ?? "")),
       csvEscape(String(b.extras?.cover ?? "")),
       csvEscape(b.location ?? ""),
@@ -255,9 +262,9 @@ function toCSV_JP(books: Book[]) {
     ].join(",");
     lines.push(row);
   }
+
   return lines.join("\n");
 }
-
 
 /* ======================== 列表示設定 ======================== */
 type ColumnKey =
