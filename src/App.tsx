@@ -478,7 +478,7 @@ function toCSV_JP(books: Book[]) {
 
 /* ======================== 列表示設定 ======================== */
 type ColumnKey =
-  | "isbn" | "title" | "author" | "publisher" | "year"
+  | "id" | "isbn" | "title" | "author" | "publisher" | "year"
   | "location" | "status" | "tags" | "note"
   | "extra:cover" | "extra:magazine_code" | "extra:timestamp";
 
@@ -486,6 +486,7 @@ type ColumnConfig = { key: ColumnKey; label: string; visible: boolean };
 const COL_STORAGE_KEY = "books.columns.jp-only";
 
 const APP_DEFAULT_COLUMNS: ColumnConfig[] = [
+  { key: "id",        label: "ID",             visible: false },
   { key: "isbn",      label: "ISBN",           visible: true },
   { key: "title",     label: "タイトル",       visible: true },
   { key: "author",    label: "著者",           visible: true },
@@ -840,6 +841,11 @@ export default function LibraryApp() {
                 {/* 上段：メタ＋操作 */}
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
+                    {show("id") && (
+                      <div className="text-xs text-slate-400 mb-1 break-all">
+                        ID: {b.id}
+                      </div>
+                    )}
                     {show("title") && (
                       <div className="text-lg font-semibold leading-snug break-words">
                         {b.title || <span className="text-slate-400">（無題）</span>}
