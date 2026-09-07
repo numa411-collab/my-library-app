@@ -91,8 +91,40 @@ function csvEscape(value: string) {
 }
 
 /* ======================== ISBN書誌情報の自動取得 ======================== */
-// Google Books を優先し、足りない項目を openBD で補完する
-async function fetchFromOpenBD(isbn: string) {
+type BookInfo = {
+  title: string;
+  author: string;
+  publisher: string;
+  year: string;
+  isbn: string;
+};
+
+function emptyBookInfo(isbn: string): BookInfo {
+  return { title: "", author: "", publisher: "", year: "", isbn };
+}
+
+function mergeBookInfo(base: BookInfo, add: Partial<BookInfo> | null | undefined): BookInfo {
+  if (!add) return base;
+  return {
+    title: base.title || add.title || "",
+    author: base.author || add.author || "",
+    publisher: base.publisher || add.publisher || "",
+    year: base.year || add.year || "",
+    isbn: base.isbn || add.isbn || "",
+  };
+}
+
+function firstXmlText(root: ParentNode, localNames: string[]) {
+  const all = Array.from(root.querySelectorAll("*"));
+  for (const name of localNames) {
+    const hit = all.find((el) => el.localName === name && (el.textContent || "").trim());
+    if (hit) return (hit.textContent || "").trim();
+  }
+  return "";
+}
+
+// 1) openBD
+async function fetchFromOpenBD(isbn: string): Promise<BookInfo | null> {
   const clean = (isbn || "").replace(/\D/g, "");
   if (!clean) return null;
 
@@ -121,49 +153,150 @@ async function fetchFromOpenBD(isbn: string) {
   };
 }
 
+// 2) 国立国会図書館サーチ（SRU / ISBN完全一致）
+async function fetchFromNDL(isbn: string): Promise<BookInfo | null> {
+  const clean = (isbn || "").replace(/\D/g, "");
+  if (!clean) return null;
+
+  const query = encodeURIComponent(`isbn="${clean}"`);
+  const url =
+    `https://ndlsearch.ndl.go.jp/api/sru?operation=searchRetrieve&maximumRecords=1&recordSchema=dcndl&query=${query}`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("NDL Search fetch failed");
+
+  const xmlText = await res.text();
+  const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+  if (doc.querySelector("parsererror")) throw new Error("NDL Search XML parse failed");
+
+  const recordData =
+    Array.from(doc.querySelectorAll("*")).find((el) => el.localName === "recordData") || doc;
+
+  const title = firstXmlText(recordData, ["title"]);
+  const author = firstXmlText(recordData, ["creator"]);
+  const publisher = firstXmlText(recordData, ["publisher"]);
+  const issued = firstXmlText(recordData, ["issued", "date"]);
+  const yearMatch = issued.match(/\d{4}(?:[-\/]\d{1,2})?/);
+
+  if (!title && !author && !publisher && !yearMatch) return null;
+
+  return {
+    title,
+    author,
+    publisher,
+    year: yearMatch ? yearMatch[0].replace("-", "/") : "",
+    isbn: clean,
+  };
+}
+
+// 3) Google Books
+async function fetchFromGoogleBooks(isbn: string): Promise<BookInfo | null> {
+  const clean = (isbn || "").replace(/\D/g, "");
+  if (!clean) return null;
+
+  const q = encodeURIComponent(`isbn:${clean}`);
+  const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${q}`);
+  if (!res.ok) throw new Error("Google Books fetch failed");
+
+  const json = await res.json();
+  const v = json?.items?.[0]?.volumeInfo;
+  if (!v) return null;
+
+  return {
+    title: v.title || "",
+    author: Array.isArray(v.authors) ? v.authors.join(", ") : v.authors || "",
+    publisher: v.publisher || "",
+    year: String(v.publishedDate || "").replace(/-0?/, "/"),
+    isbn: clean,
+  };
+}
+
+// 4) CiNii Books
+// 利用にはCiNiiのappidが必要。VITE_CINII_APPID未設定時は自動スキップ。
+async function fetchFromCiNii(isbn: string): Promise<BookInfo | null> {
+  const clean = (isbn || "").replace(/\D/g, "");
+  const appid = String(import.meta.env.VITE_CINII_APPID || "").trim();
+  if (!clean || !appid) return null;
+
+  const params = new URLSearchParams({
+    isbn: clean,
+    format: "json",
+    count: "1",
+    appid,
+  });
+  const res = await fetch(`https://ci.nii.ac.jp/books/opensearch/search?${params.toString()}`);
+  if (!res.ok) throw new Error("CiNii Books fetch failed");
+
+  const json = await res.json();
+  const graph = Array.isArray(json?.["@graph"]) ? json["@graph"] : [];
+  const channel = graph.find((x: any) => x?.["@type"] === "channel") || graph[0] || {};
+  const items = Array.isArray(channel?.items)
+    ? channel.items
+    : Array.isArray(channel?.item)
+      ? channel.item
+      : [];
+  const item = items[0] || null;
+  if (!item) return null;
+
+  const title =
+    item?.title ||
+    item?.["dc:title"] ||
+    "";
+  const authorValue = item?.author || item?.["dc:creator"] || "";
+  const author = Array.isArray(authorValue)
+    ? authorValue.map((x: any) => typeof x === "string" ? x : x?.name || x?.["@value"] || "").filter(Boolean).join(", ")
+    : typeof authorValue === "string"
+      ? authorValue
+      : authorValue?.name || authorValue?.["@value"] || "";
+  const publisher =
+    item?.["dc:publisher"] ||
+    item?.publisher ||
+    "";
+  const published =
+    item?.["prism:publicationDate"] ||
+    item?.updated ||
+    "";
+  const yearMatch = String(published).match(/\d{4}(?:[-\/]\d{1,2})?/);
+
+  if (!title && !author && !publisher && !yearMatch) return null;
+
+  return {
+    title: String(title || ""),
+    author: String(author || ""),
+    publisher: String(publisher || ""),
+    year: yearMatch ? yearMatch[0].replace("-", "/") : "",
+    isbn: clean,
+  };
+}
+
 async function fetchBookByISBN(isbn: string) {
   const clean = (isbn || "").replace(/\D/g, "");
   if (!clean) throw new Error("ISBNが空です");
 
-  let google: any = null;
-  try {
-    const q = encodeURIComponent(`isbn:${clean}`);
-    const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${q}`);
-    if (res.ok) {
-      const json = await res.json();
-      const v = json?.items?.[0]?.volumeInfo;
-      if (v) {
-        google = {
-          title: v.title || "",
-          author: Array.isArray(v.authors) ? v.authors.join(", ") : v.authors || "",
-          publisher: v.publisher || "",
-          year: String(v.publishedDate || "").replace(/-0?/, "/"),
-          isbn: clean,
-        };
-      }
+  let merged = emptyBookInfo(clean);
+
+  // 日本の本に強い順で取得し、空欄だけを後続サービスで補完する
+  const sources = [
+    fetchFromOpenBD,
+    fetchFromNDL,
+    fetchFromGoogleBooks,
+    fetchFromCiNii,
+  ];
+
+  for (const fetcher of sources) {
+    try {
+      const info = await fetcher(clean);
+      merged = mergeBookInfo(merged, info);
+      if (merged.title && merged.author && merged.publisher && merged.year) break;
+    } catch {
+      // 1サービスが失敗しても次のサービスを試す
     }
-  } catch {
-    // Google Booksで取れなくてもopenBDを試す
   }
-
-  let openbd: any = null;
-  try {
-    openbd = await fetchFromOpenBD(clean);
-  } catch {
-    // openBDも取れない場合は下で判定
-  }
-
-  const merged = {
-    title: google?.title || openbd?.title || "",
-    author: google?.author || openbd?.author || "",
-    publisher: google?.publisher || openbd?.publisher || "",
-    year: google?.year || openbd?.year || "",
-    isbn: clean,
-  };
 
   if (!merged.title && !merged.author && !merged.publisher && !merged.year) {
     throw new Error("書誌情報が見つかりませんでした");
   }
+
   return merged;
 }
 
