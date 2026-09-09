@@ -1,7 +1,7 @@
 const TOKYO_ZOKEI_OPAC = "https://lib.kuwasawa.ac.jp/opac/opac_search/";
 
-// 東京造形大学OPACは応答に10秒以上かかる場合がある。
-export const config = { maxDuration: 60 };
+// Edge Runtimeを使い、通常のServerless Functionとは別のネットワーク経路で照会する。
+export const config = { runtime: "edge" };
 
 function buildSearchUrl(isbn) {
   const params = new URLSearchParams({
@@ -16,10 +16,11 @@ function buildSearchUrl(isbn) {
   return `${TOKYO_ZOKEI_OPAC}?${params.toString()}`;
 }
 
-export default async function handler(request, response) {
-  const isbn = String(request.query?.isbn || "").replace(/\D/g, "");
+export default async function handler(request) {
+  const requestUrl = new URL(request.url);
+  const isbn = String(requestUrl.searchParams.get("isbn") || "").replace(/\D/g, "");
   if (isbn.length !== 10 && isbn.length !== 13) {
-    return response.status(400).json({ status: "unavailable" });
+    return Response.json({ status: "unavailable" }, { status: 400 });
   }
 
   const searchUrl = buildSearchUrl(isbn);
@@ -44,13 +45,15 @@ export default async function handler(request, response) {
       throw new Error("OPAC response did not contain a recognizable result");
     }
 
-    response.setHeader("Cache-Control", "s-maxage=86400, stale-while-revalidate=604800");
-    return response.status(200).json({
-      status: isNotHeld ? "not-held" : "held",
-      searchUrl,
-    });
+    return Response.json(
+      { status: isNotHeld ? "not-held" : "held", searchUrl },
+      {
+        status: 200,
+        headers: { "Cache-Control": "s-maxage=86400, stale-while-revalidate=604800" },
+      },
+    );
   } catch (error) {
     console.error("Tokyo Zokei OPAC lookup failed", error);
-    return response.status(502).json({ status: "unavailable", searchUrl });
+    return Response.json({ status: "unavailable", searchUrl }, { status: 502 });
   }
 }
