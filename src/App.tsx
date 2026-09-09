@@ -212,7 +212,6 @@ async function fetchFromGoogleBooks(isbn: string): Promise<BookInfo | null> {
 }
 
 /* ======================== CiNii Research ======================== */
-const TOKYO_ZOKEI_LIBRARY_ID = "FA006055";
 const CINII_APP_ID = "Eij6hrIjjV5h5NbAQ2qh";
 
 type ZokeiHoldingStatus = "idle" | "loading" | "held" | "not-held" | "unavailable";
@@ -241,37 +240,18 @@ async function fetchCiNiiBookItem(isbn: string): Promise<any | null> {
   return items[0] || null;
 }
 
-function getCiNiiNcid(item: any) {
-  const identifiers = Array.isArray(item?.["dc:identifier"])
-    ? item["dc:identifier"]
-    : [];
-  const ncid = identifiers.find((x: any) => x?.["@type"] === "cir:NCID");
-  return String(ncid?.["@value"] || "").trim();
-}
-
 async function checkTokyoZokeiHolding(isbn: string): Promise<"held" | "not-held" | "unavailable"> {
   const clean = normalizeIsbn(isbn);
-  const appid = getCiNiiAppId();
-  if (!clean || !appid) return "unavailable";
+  if (!clean) return "unavailable";
 
-  const item = await fetchCiNiiBookItem(clean);
-  const ncid = getCiNiiNcid(item);
-  if (!ncid) return "unavailable";
-
-  const params = new URLSearchParams({
-    ncid,
-    fano: TOKYO_ZOKEI_LIBRARY_ID,
-    format: "json",
-    appid,
-  });
-  const res = await fetch(`https://cir.nii.ac.jp/opensearch/holder?${params.toString()}`);
-  if (!res.ok) throw new Error("CiNii Research holding search failed");
+  const params = new URLSearchParams({ isbn: clean });
+  const res = await fetch(`/api/cinii-holding?${params.toString()}`);
+  if (!res.ok) throw new Error("Tokyo Zokei holding search failed");
 
   const json = await res.json();
-  const graph = Array.isArray(json?.["@graph"]) ? json["@graph"] : [];
-  const channel = graph.find((x: any) => x?.["@type"] === "channel") || graph[0] || {};
-  const total = Number(channel?.["opensearch:totalResults"] ?? 0);
-  return total > 0 ? "held" : "not-held";
+  return json?.status === "held" || json?.status === "not-held"
+    ? json.status
+    : "unavailable";
 }
 
 // 4) CiNii Research（書誌情報の不足分を補完）
