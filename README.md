@@ -1,5 +1,17 @@
 # React + TypeScript + Vite
 
+## CiNii Research（東京造形大学図書館の所蔵確認）
+
+1. `.env.example` を `.env.local` という名前でコピーします。
+2. `.env.local` の `VITE_CINII_APPID` にCiNiiのアプリケーションIDを設定します。
+3. `npm run dev` または `npm run build` を実行します。
+
+東京造形大学図書館のCiNii館コードは `FA006055` です。ISBNのある本について、
+一覧のボタンからCiNii Research上の所蔵登録を1冊ずつ確認できます。
+
+Vercelでは、Project Settings の Environment Variables に
+`VITE_CINII_APPID` を追加してから再デプロイしてください。
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
