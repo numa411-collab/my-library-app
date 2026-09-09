@@ -211,11 +211,19 @@ async function fetchFromGoogleBooks(isbn: string): Promise<BookInfo | null> {
   };
 }
 
-// 4) CiNii Books
-// 利用にはCiNiiのappidが必要。VITE_CINII_APPID未設定時は自動スキップ。
-async function fetchFromCiNii(isbn: string): Promise<BookInfo | null> {
+/* ======================== CiNii Research ======================== */
+const TOKYO_ZOKEI_LIBRARY_ID = "FA006055";
+
+type ZokeiHoldingStatus = "idle" | "loading" | "held" | "not-held" | "unavailable";
+type ZokeiHoldingCheck = { isbn: string; status: ZokeiHoldingStatus };
+
+function getCiNiiAppId() {
+  return String(import.meta.env.VITE_CINII_APPID || "").trim();
+}
+
+async function fetchCiNiiBookItem(isbn: string): Promise<any | null> {
   const clean = (isbn || "").replace(/\D/g, "");
-  const appid = String(import.meta.env.VITE_CINII_APPID || "").trim();
+  const appid = getCiNiiAppId();
   if (!clean || !appid) return null;
 
   const params = new URLSearchParams({
@@ -224,18 +232,52 @@ async function fetchFromCiNii(isbn: string): Promise<BookInfo | null> {
     count: "1",
     appid,
   });
-  const res = await fetch(`https://ci.nii.ac.jp/books/opensearch/search?${params.toString()}`);
-  if (!res.ok) throw new Error("CiNii Books fetch failed");
+  const res = await fetch(`https://cir.nii.ac.jp/opensearch/books?${params.toString()}`);
+  if (!res.ok) throw new Error("CiNii Research book search failed");
+
+  const json = await res.json();
+  const items = Array.isArray(json?.items) ? json.items : [];
+  return items[0] || null;
+}
+
+function getCiNiiNcid(item: any) {
+  const identifiers = Array.isArray(item?.["dc:identifier"])
+    ? item["dc:identifier"]
+    : [];
+  const ncid = identifiers.find((x: any) => x?.["@type"] === "cir:NCID");
+  return String(ncid?.["@value"] || "").trim();
+}
+
+async function checkTokyoZokeiHolding(isbn: string): Promise<"held" | "not-held" | "unavailable"> {
+  const clean = normalizeIsbn(isbn);
+  const appid = getCiNiiAppId();
+  if (!clean || !appid) return "unavailable";
+
+  const item = await fetchCiNiiBookItem(clean);
+  const ncid = getCiNiiNcid(item);
+  if (!ncid) return "unavailable";
+
+  const params = new URLSearchParams({
+    ncid,
+    fano: TOKYO_ZOKEI_LIBRARY_ID,
+    format: "json",
+    appid,
+  });
+  const res = await fetch(`https://cir.nii.ac.jp/opensearch/holder?${params.toString()}`);
+  if (!res.ok) throw new Error("CiNii Research holding search failed");
 
   const json = await res.json();
   const graph = Array.isArray(json?.["@graph"]) ? json["@graph"] : [];
   const channel = graph.find((x: any) => x?.["@type"] === "channel") || graph[0] || {};
-  const items = Array.isArray(channel?.items)
-    ? channel.items
-    : Array.isArray(channel?.item)
-      ? channel.item
-      : [];
-  const item = items[0] || null;
+  const total = Number(channel?.["opensearch:totalResults"] ?? 0);
+  return total > 0 ? "held" : "not-held";
+}
+
+// 4) CiNii Research（書誌情報の不足分を補完）
+// 利用にはCiNiiのappidが必要。VITE_CINII_APPID未設定時は自動スキップ。
+async function fetchFromCiNii(isbn: string): Promise<BookInfo | null> {
+  const clean = (isbn || "").replace(/\D/g, "");
+  const item = await fetchCiNiiBookItem(clean);
   if (!item) return null;
 
   const title =
@@ -523,6 +565,7 @@ export default function LibraryApp() {
   const [tagFilter, setTagFilter] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<"all" | "所蔵" | "貸出中">("all");
   const [editing, setEditing] = useState<Book | null>(null);
+  const [zokeiHoldings, setZokeiHoldings] = useState<Record<string, ZokeiHoldingCheck>>({});
 
   const [columns, setColumns] = useState<ColumnConfig[]>(
     () => loadColumns() ?? APP_DEFAULT_COLUMNS
@@ -684,6 +727,26 @@ export default function LibraryApp() {
     setBooks((prev) => prev.filter((b) => b.id !== id));
   }
 
+  async function handleZokeiHoldingCheck(book: Book) {
+    const isbn = normalizeIsbn(book.isbn);
+    if (!isbn) return;
+
+    setZokeiHoldings((prev) => ({
+      ...prev,
+      [book.id]: { isbn, status: "loading" },
+    }));
+
+    try {
+      const status = await checkTokyoZokeiHolding(isbn);
+      setZokeiHoldings((prev) => ({ ...prev, [book.id]: { isbn, status } }));
+    } catch {
+      setZokeiHoldings((prev) => ({
+        ...prev,
+        [book.id]: { isbn, status: "unavailable" },
+      }));
+    }
+  }
+
 
 
   return (
@@ -820,7 +883,25 @@ export default function LibraryApp() {
 
         {/* 一覧 */}
         <ul className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filtered.map((b) => (
+          {filtered.map((b) => {
+            const normalizedBookIsbn = normalizeIsbn(b.isbn);
+            const savedHolding = zokeiHoldings[b.id];
+            const holdingStatus = savedHolding?.isbn === normalizedBookIsbn
+              ? savedHolding.status
+              : "idle";
+            const holdingLabel = !normalizedBookIsbn
+              ? "東京造形大学：ISBNなし"
+              : holdingStatus === "loading"
+                ? "東京造形大学：確認中…"
+                : holdingStatus === "held"
+                  ? "東京造形大学：所蔵あり"
+                  : holdingStatus === "not-held"
+                    ? "東京造形大学：登録なし"
+                    : holdingStatus === "unavailable"
+                      ? "東京造形大学：確認できず（再試行）"
+                      : "東京造形大学の所蔵を確認";
+
+            return (
             <li
               key={b.id}
               className={`bg-white border border-slate-200 rounded-2xl p-4 shadow-sm hover:shadow transition ${isSelected(b.id) ? "ring-2 ring-indigo-200" : ""}`}
@@ -924,6 +1005,24 @@ export default function LibraryApp() {
                           {b.status}
                         </span>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => { void handleZokeiHoldingCheck(b); }}
+                        disabled={!normalizedBookIsbn || holdingStatus === "loading"}
+                        className={
+                          "text-xs px-2 py-1 rounded-full border text-right " +
+                          (holdingStatus === "held"
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : holdingStatus === "not-held"
+                              ? "bg-slate-100 text-slate-600 border-slate-300"
+                              : holdingStatus === "unavailable"
+                                ? "bg-amber-50 text-amber-800 border-amber-200"
+                                : "bg-indigo-50 text-indigo-700 border-indigo-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:border-slate-200")
+                        }
+                        title="CiNii Researchで東京造形大学図書館の所蔵登録を確認"
+                      >
+                        {holdingLabel}
+                      </button>
                       <div className="flex gap-2">
                         <button
                           onClick={() => setEditing(b)}
@@ -944,7 +1043,8 @@ export default function LibraryApp() {
 
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       </main>
 
