@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { BrowserMultiFormatReader } from "@zxing/browser";
 
+const APP_VERSION = "v1.0.0";
+
 /* ======================== 型定義 ======================== */
 export type Book = {
   id: string;
@@ -536,7 +538,7 @@ function saveColumns(cols: ColumnConfig[]) {
 export default function LibraryApp() {
   // タブタイトルを統一
   useEffect(() => {
-    document.title = "沼田真一研究室 蔵書検索アプリ";
+    document.title = `沼田真一研究室 蔵書検索アプリ ${APP_VERSION}`;
   }, []);
 
   const [books, setBooks] = useState<Book[]>(() => load("books.jp-only", []));
@@ -736,6 +738,7 @@ export default function LibraryApp() {
         <div className="max-w-5xl mx-auto px-4 py-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <h1 className="text-xl md:text-2xl font-bold flex items-center gap-3">
             沼田真一研究室 蔵書検索アプリ
+            <span className="text-xs font-medium text-slate-400">{APP_VERSION}</span>
             <span className="text-sm text-slate-500">
               {filtered.length} / {books.length} 冊
             </span>
@@ -1031,7 +1034,7 @@ export default function LibraryApp() {
 
       <footer className="max-w-5xl mx-auto px-4 py-8 text-xs text-slate-500">
         <p>
-          <strong>沼田真一研究室 蔵書検索アプリ</strong> のデータは
+          <strong>沼田真一研究室 蔵書検索アプリ {APP_VERSION}</strong> のデータは
           この端末の <strong>localStorage</strong> に保存されます。ブラウザを変えると別データになります。
           共有する場合はCSVを書き出して他端末で取り込んでください。
         </p>
