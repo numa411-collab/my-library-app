@@ -1,5 +1,8 @@
 const TOKYO_ZOKEI_OPAC = "https://lib.kuwasawa.ac.jp/opac/opac_search/";
 
+// 東京造形大学OPACは応答に10秒以上かかる場合がある。
+export const config = { maxDuration: 60 };
+
 function buildSearchUrl(isbn) {
   const params = new URLSearchParams({
     lang: "0",
