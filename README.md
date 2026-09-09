@@ -5,10 +5,9 @@
 登録済みのCiNiiアプリケーションIDをコード側に設定しているため、
 追加設定なしで `npm run dev` または `npm run build` を実行できます。
 
-東京造形大学図書館のCiNii館コードは `FA006055` です。ISBNのある本について、
-一覧のボタンからCiNii Research上の所蔵登録を1冊ずつ確認できます。
-所蔵検索はブラウザのCORS制限を避けるため、Vercel Functionsの
-`/api/cinii-holding` を経由して確認します。
+ISBNのある本について、一覧のボタンから東京造形大学の公式OPACを
+1冊ずつ検索できます。所蔵検索はブラウザのCORS制限を避けるため、
+Vercel Functionsの `/api/zokei-holding` を経由します。
 
 別のアプリケーションIDを使う場合だけ、`VITE_CINII_APPID` 環境変数で上書きできます。
 

@@ -245,7 +245,7 @@ async function checkTokyoZokeiHolding(isbn: string): Promise<"held" | "not-held"
   if (!clean) return "unavailable";
 
   const params = new URLSearchParams({ isbn: clean });
-  const res = await fetch(`/api/cinii-holding?${params.toString()}`);
+  const res = await fetch(`/api/zokei-holding?${params.toString()}`);
   if (!res.ok) throw new Error("Tokyo Zokei holding search failed");
 
   const json = await res.json();
@@ -877,7 +877,7 @@ export default function LibraryApp() {
                 : holdingStatus === "held"
                   ? "東京造形大学：所蔵あり"
                   : holdingStatus === "not-held"
-                    ? "東京造形大学：登録なし"
+                    ? "東京造形大学：未所蔵"
                     : holdingStatus === "unavailable"
                       ? "東京造形大学：確認できず（再試行）"
                       : "東京造形大学の所蔵を確認";
@@ -1000,7 +1000,7 @@ export default function LibraryApp() {
                                 ? "bg-amber-50 text-amber-800 border-amber-200"
                                 : "bg-indigo-50 text-indigo-700 border-indigo-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:border-slate-200")
                         }
-                        title="CiNii Researchで東京造形大学図書館の所蔵登録を確認"
+                        title="東京造形大学の公式OPACで所蔵を確認"
                       >
                         {holdingLabel}
                       </button>
