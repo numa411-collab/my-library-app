@@ -2,15 +2,13 @@
 
 ## CiNii Research（東京造形大学図書館の所蔵確認）
 
-1. `.env.example` を `.env.local` という名前でコピーします。
-2. `.env.local` の `VITE_CINII_APPID` にCiNiiのアプリケーションIDを設定します。
-3. `npm run dev` または `npm run build` を実行します。
+登録済みのCiNiiアプリケーションIDをコード側に設定しているため、
+追加設定なしで `npm run dev` または `npm run build` を実行できます。
 
 東京造形大学図書館のCiNii館コードは `FA006055` です。ISBNのある本について、
 一覧のボタンからCiNii Research上の所蔵登録を1冊ずつ確認できます。
 
-Vercelでは、Project Settings の Environment Variables に
-`VITE_CINII_APPID` を追加してから再デプロイしてください。
+別のアプリケーションIDを使う場合だけ、`VITE_CINII_APPID` 環境変数で上書きできます。
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

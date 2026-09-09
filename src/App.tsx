@@ -213,12 +213,13 @@ async function fetchFromGoogleBooks(isbn: string): Promise<BookInfo | null> {
 
 /* ======================== CiNii Research ======================== */
 const TOKYO_ZOKEI_LIBRARY_ID = "FA006055";
+const CINII_APP_ID = "Eij6hrIjjV5h5NbAQ2qh";
 
 type ZokeiHoldingStatus = "idle" | "loading" | "held" | "not-held" | "unavailable";
 type ZokeiHoldingCheck = { isbn: string; status: ZokeiHoldingStatus };
 
 function getCiNiiAppId() {
-  return String(import.meta.env.VITE_CINII_APPID || "").trim();
+  return String(import.meta.env.VITE_CINII_APPID || CINII_APP_ID).trim();
 }
 
 async function fetchCiNiiBookItem(isbn: string): Promise<any | null> {
@@ -274,7 +275,7 @@ async function checkTokyoZokeiHolding(isbn: string): Promise<"held" | "not-held"
 }
 
 // 4) CiNii Research（書誌情報の不足分を補完）
-// 利用にはCiNiiのappidが必要。VITE_CINII_APPID未設定時は自動スキップ。
+// VITE_CINII_APPIDが設定されている場合は、コード内の既定値より優先する。
 async function fetchFromCiNii(isbn: string): Promise<BookInfo | null> {
   const clean = (isbn || "").replace(/\D/g, "");
   const item = await fetchCiNiiBookItem(clean);
