@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>OpenSearch連携の検証 — 蔵書アプリ</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#202b38;background:#f3f5f7;line-height:1.7}body{margin:0}main{max-width:850px;margin:32px auto;padding:24px}section{background:white;border:1px solid #dbe1e7;border-radius:12px;padding:22px;margin:18px 0}h1{font-size:1.7rem;line-height:1.4}h2{font-size:1.15rem}label{display:block;margin-top:14px}input,select,button{font:inherit;padding:10px;max-width:100%;box-sizing:border-box}input,select{width:100%;border:1px solid #8795a5;border-radius:6px}button{cursor:pointer;margin:12px 8px 0 0;border:1px solid #536678;border-radius:6px;background:#edf2f7;color:#152f48}button:disabled{opacity:.5;cursor:wait}article{border-top:1px solid #dbe1e7;padding:16px 0}article p{margin:6px 0}a{color:#184f8c}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;max-height:480px;overflow:auto}small{color:#536173}.notice{border-left:4px solid #9a742d;padding-left:14px}#status{font-weight:600}code{overflow-wrap:anywhere}@media(max-width:550px){main{margin:0;padding:16px}section{padding:16px}}
+</style>
+</head>
+<body><main>
+<p><a href="/">蔵書アプリへ戻る</a> / 確認用・正式版とは別</p>
+<h1>OpenSearch連携の検証</h1>
+<p class="notice">この画面は書誌検索の動作確認用です。検索ヒットを「東京造形大学に所蔵あり」とは判定しません。既存の蔵書データは読み書きしません。</p>
+<section>
+<h2>1. ISBNで検索</h2>
+<form id="form">
+<label for="isbn">ISBN（10桁・13桁。ハイフンありも可）</label><input id="isbn" name="isbn" value="9784533076930" maxlength="40" required autocomplete="off">
+<label for="scope">検索範囲</label><select id="scope"><option value="all">所属を指定しない（まずはこちら）</option><option value="zokei">所属＝東京造形大学（dpmcの値は未検証）</option></select>
+<button type="submit">書誌を検索</button>
+</form>
+<small>操作ごとに1回だけアクセスします。連続操作は2秒以上あけてください。自動再試行・蔵書全件検索は行いません。</small>
+<p id="status" role="status" aria-live="polite">まだ検索していません。</p>
+<div id="candidates"></div>
+</section>
+<section>
+<h2>2. 応答を確認</h2>
+<p>検索候補の「詳細JSONを確認」で、書誌IDに対応する詳細情報を取得します。所蔵情報の項目が実際に返るかを確認するための表示です。</p>
+<button id="save" type="button" disabled>今回の応答JSONを保存</button>
+<pre id="raw">未取得</pre>
+</section>
+<p><small>Preview専用。正式版への組み込み・所蔵判定の確定は、実データとの照合後に行います。</small></p>
+<script type="module">
+const $ = id => document.getElementById(id);
+let pending = false, last = null;
+const statuses = {'bibliography-found':'書誌が見つかりました。東京造形大学の所蔵は未確認です。','not-found':'指定条件に一致する書誌がありません。「所蔵なし」の確定ではありません。','detail-received':'詳細JSONを取得しました。所蔵は未判定です。','invalid-request':'入力内容を確認してください。','disabled':'この環境では検証APIが無効です。VercelのPreviewで開いてください。','unavailable':'確認できませんでした。通信失敗を「所蔵なし」とは扱いません。'};
+async function run(params) {
+  if (pending) return;
+  pending = true;
+  if (params.isbn) $('candidates').replaceChildren();
+  document.querySelectorAll('button').forEach(b=>b.disabled=true);
+  $('status').textContent='OPACに問い合わせています…';
+  try {
+    const r=await fetch('/api/zokei-opensearch?'+new URLSearchParams(params),{signal:AbortSignal.timeout(25000),cache:'no-store'});
+    if (!(r.headers.get('content-type')||'').includes('json')) throw new Error('検証APIのJSON応答を受け取れませんでした。Previewの配備状況を確認してください。');
+    last=await r.json();
+    $('raw').textContent=JSON.stringify(last,null,2);
+    $('status').textContent=(statuses[last.status]||'未確認の応答形式です。')+(last.error?' エラー: '+last.error:'')+(last.cached?'（保存済み応答）':'');
+    if(r.status===429) $('status').textContent+=' '+(r.headers.get('retry-after')||'2')+'秒以上あけてから手動で再確認してください。';
+    if(last.candidates) {
+      const summary=document.createElement('p'); summary.textContent=`書誌総数：${last.totalResults}件 ／ 表示：${last.returnedCount}件`+(last.truncated?'（続きあり・先頭5件までの検証）':''); $('candidates').append(summary);
+      for(const c of last.candidates) {
+        const box=document.createElement('article'),title=document.createElement('strong'),id=document.createElement('p'),link=document.createElement('a'),button=document.createElement('button');
+        title.textContent=c.title||'タイトル未取得';id.textContent='書誌ID：'+c.bibid+' ／ ISBN返却値との一致：'+(c.isbnMatched?'一致（巻次・所蔵は要確認）':'未確認');
+        const url=new URL(c.opacUrl);
+        if(url.protocol==='https:'&&url.hostname==='lib.kuwasawa.ac.jp'&&!url.username&&!url.password&&!url.port){link.href=url.href;link.textContent='OPACで確認';link.target='_blank';link.rel='noopener noreferrer';}
+        button.type='button';button.textContent='詳細JSONを確認';button.onclick=()=>run({bibid:c.bibid});box.append(title,id,link,document.createElement('br'),button);$('candidates').append(box);
+      }
+    }
+  } catch(e) {last=null;$('raw').textContent='応答未取得';$('status').textContent='確認できませんでした。'+e.message;}
+  finally {pending=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);$('save').disabled=!last;}
+}
+$('form').addEventListener('submit',e=>{e.preventDefault();run({isbn:$('isbn').value,scope:$('scope').value});});
+$('save').addEventListener('click',()=>{if(!last)return;const url=URL.createObjectURL(new Blob([JSON.stringify(last,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='opensearch-response.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+</script>
+</main></body></html>
